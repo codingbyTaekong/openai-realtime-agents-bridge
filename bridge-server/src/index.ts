@@ -59,8 +59,8 @@ const agentManager = new AgentManager(openaiService);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
     activeSessions: sessionManager.getActiveSessionCount()
   });
@@ -149,7 +149,7 @@ io.on('connection', (socket) => {
 
       // OpenAI Realtime API 연결
       await realtimeProxy.connect();
-      
+
       session.status = 'CONNECTED';
       session.openaiSession = realtimeProxy;
 
@@ -166,7 +166,7 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('세션 참여 오류:', error);
       socket.emit('error', { message: '세션 생성에 실패했습니다.' });
-      
+
       // 정리
       if (realtimeProxy) {
         realtimeProxy.disconnect();
@@ -184,7 +184,7 @@ io.on('connection', (socket) => {
 
     try {
       console.log(`텍스트 메시지 전송: ${currentSession.id} - "${text}"`);
-      
+
       // OpenAI Realtime API로 직접 전송
       realtimeProxy.sendTextMessage(text);
 
@@ -206,7 +206,7 @@ io.on('connection', (socket) => {
 
     try {
       console.log(`오디오 데이터 수신: ${currentSession.id}, 형식=${format}`);
-      
+
       // 오디오 데이터를 Buffer로 변환
       let audioBuffer: Buffer;
       if (typeof audioData === 'string') {
@@ -256,7 +256,7 @@ io.on('connection', (socket) => {
   socket.on('mute', (muted) => {
     if (realtimeProxy) {
       console.log(`음소거 설정: ${currentSession?.id}, 음소거=${muted}`);
-      
+
       // 음소거 시에는 turn_detection을 비활성화
       const sessionConfig = muted ? {
         turn_detection: null
@@ -269,7 +269,7 @@ io.on('connection', (socket) => {
           create_response: true
         }
       };
-      
+
       realtimeProxy.updateSession(sessionConfig);
     }
   });
@@ -278,17 +278,17 @@ io.on('connection', (socket) => {
   socket.on('disconnect_session', () => {
     if (currentSession) {
       console.log(`세션 연결 해제 요청: ${currentSession.id}`);
-      
+
       // Realtime 프록시 연결 해제
       if (realtimeProxy) {
         realtimeProxy.disconnect();
         realtimeProxy = null;
       }
-      
+
       // 세션 정리
       sessionManager.removeSession(currentSession.id);
       currentSession = null;
-      
+
       console.log(`세션 연결 해제 완료`);
     }
   });
@@ -296,16 +296,16 @@ io.on('connection', (socket) => {
   // 클라이언트 연결 해제
   socket.on('disconnect', (reason) => {
     console.log(`클라이언트 연결 해제됨: ${socket.id}, 이유: ${reason}`);
-    
+
     if (currentSession) {
       console.log(`세션 정리 중: ${currentSession.id}`);
-      
+
       // Realtime 프록시 연결 해제
       if (realtimeProxy) {
         realtimeProxy.disconnect();
         realtimeProxy = null;
       }
-      
+
       // 세션 정리
       sessionManager.removeSession(currentSession.id);
       currentSession = null;

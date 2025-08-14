@@ -39,7 +39,7 @@ export class AgentManager {
       }
 
       const sessionState = this.sessionAgents.get(sessionId);
-      
+
       // 메시지를 대화 히스토리에 추가
       sessionState.conversationHistory.push(message);
       sessionState.lastActivity = new Date();
@@ -47,7 +47,7 @@ export class AgentManager {
       // 텍스트 메시지인 경우 chatSupervisor 에이전트로 처리
       if (message.type === 'text') {
         const response = await this.chatSupervisorAgent.processTextMessage(
-          sessionId, 
+          sessionId,
           message.content,
           sessionState.conversationHistory
         );
@@ -57,7 +57,7 @@ export class AgentManager {
           const assistantMessage: Message = {
             id: `resp_${Date.now()}`,
             type: 'text',
-            content: response.content || response.message || '',
+            content: response.content || '',
             role: 'assistant',
             timestamp: Date.now()
           };
@@ -91,7 +91,7 @@ export class AgentManager {
       }
 
       const sessionState = this.sessionAgents.get(sessionId);
-      
+
       // 오디오 메시지를 대화 히스토리에 추가
       sessionState.conversationHistory.push(audioMessage);
       sessionState.lastActivity = new Date();
@@ -116,7 +116,7 @@ export class AgentManager {
   interruptSession(sessionId: string): void {
     try {
       console.log(`세션 중단: ${sessionId}`);
-      
+
       const sessionState = this.sessionAgents.get(sessionId);
       if (sessionState) {
         // 현재 진행 중인 작업 중단
@@ -124,7 +124,7 @@ export class AgentManager {
       }
 
       // OpenAI 세션 중단 (실제 구현 필요)
-      
+
     } catch (error) {
       console.error('세션 중단 오류:', error);
     }
@@ -136,7 +136,7 @@ export class AgentManager {
   muteSession(sessionId: string, muted: boolean): void {
     try {
       console.log(`세션 음소거 설정: ${sessionId}, 음소거=${muted}`);
-      
+
       const sessionState = this.sessionAgents.get(sessionId);
       if (sessionState) {
         sessionState.muted = muted;
@@ -154,13 +154,13 @@ export class AgentManager {
   disconnectSession(sessionId: string): void {
     try {
       console.log(`세션 연결 해제: ${sessionId}`);
-      
+
       // 세션 상태 정리
       this.sessionAgents.delete(sessionId);
-      
+
       // OpenAI 세션 종료
       this.openaiService.closeSession(sessionId);
-      
+
     } catch (error) {
       console.error('세션 연결 해제 오류:', error);
     }

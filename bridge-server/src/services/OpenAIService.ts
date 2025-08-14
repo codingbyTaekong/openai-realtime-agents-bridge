@@ -7,7 +7,7 @@ export class OpenAIService {
 
   constructor() {
     const apiKey = process.env.OPENAI_API_KEY;
-    
+
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.');
     }
@@ -22,7 +22,7 @@ export class OpenAIService {
    */
   async createSession(): Promise<any> {
     try {
-      const response = await this.openai.realtime.sessions.create({
+      const response = await (this.openai as any).realtime.sessions.create({
         model: "gpt-4o-realtime-preview-2025-06-03",
       });
 
@@ -51,7 +51,7 @@ export class OpenAIService {
       };
 
       const sessionConfig = { ...defaultConfig, ...config };
-      
+
       // 실제 OpenAI Realtime Session 객체를 저장
       const session = {
         id: sessionId,
@@ -61,7 +61,7 @@ export class OpenAIService {
       };
 
       this.sessions.set(sessionId, session);
-      
+
       console.log(`실시간 세션 설정됨: ${sessionId}`, sessionConfig);
       return session;
 
@@ -117,7 +117,7 @@ export class OpenAIService {
 
       // OpenAI에 오디오 메시지 전송 (실제 구현은 Realtime API 사용)
       console.log(`오디오 메시지 처리됨: ${sessionId}, 크기: ${audioData.length}바이트`);
-      
+
       // 임시 응답 (실제로는 Realtime API 응답)
       return {
         type: 'audio_response',
@@ -142,13 +142,13 @@ export class OpenAIService {
       switch (functionName) {
         case 'getUserAccountInfo':
           return this.getUserAccountInfo(arguments_.phone_number);
-        
+
         case 'lookupPolicyDocument':
           return this.lookupPolicyDocument(arguments_.topic);
-        
+
         case 'findNearestStore':
           return this.findNearestStore(arguments_.zip_code);
-        
+
         default:
           throw new Error(`알 수 없는 함수: ${functionName}`);
       }
@@ -227,7 +227,7 @@ export class OpenAIService {
       }
     ];
 
-    return sampleDocs.filter(doc => 
+    return sampleDocs.filter(doc =>
       doc.topic.toLowerCase().includes(topic.toLowerCase()) ||
       doc.content.toLowerCase().includes(topic.toLowerCase())
     );
