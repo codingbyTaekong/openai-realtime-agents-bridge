@@ -23,11 +23,13 @@ export default function TestPage() {
   const [inputText, setInputText] = useState("");
   const [serverUrl, setServerUrl] = useState("http://localhost:8000");
   const [userId, setUserId] = useState("");
-  const [isAudioMode, setIsAudioMode] = useState(false);
+  const [isAudioMode, setIsAudioMode] = useState(true);
+  const [isAutoVAD, setIsAutoVAD] = useState(true);
 
   // UI 상태
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hasSentGreetingRef = useRef(false);
 
   // Bridge session 콜백
   const bridgeCallbacks = {
@@ -91,7 +93,7 @@ export default function TestPage() {
 
     onRealtimeEvent: (event: any) => {
       console.log("OpenAI Realtime 이벤트:", event.type, event);
-      
+
       // 특정 이벤트에 대한 UI 업데이트
       if (event.type === 'response.done') {
         setIsLoading(false);
@@ -128,10 +130,13 @@ export default function TestPage() {
   } = useBridgeSession(bridgeCallbacks);
 
   // Bridge audio 콜백
+  const isConnectedRef = useRef(false);
+  useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
+
   const audioCallbacks = {
     onAudioChunk: async (audioData: ArrayBuffer) => {
       // 실시간 오디오 청크 전송 (Realtime API 방식)
-      if (isConnected) {
+      if (isConnectedRef.current) {
         try {
           const base64 = btoa(String.fromCharCode(...new Uint8Array(audioData)));
           sendAudio(base64, 'pcm16');
@@ -143,17 +148,19 @@ export default function TestPage() {
 
     onRecordingStart: () => {
       console.log("녹음 시작");
-      if (isConnected) {
-        clearAudio(); // 이전 오디오 버퍼 클리어
+      // PTT 모드에서만 버퍼를 클리어
+      if (isConnected && !isAutoVAD) {
+        clearAudio();
       }
     },
 
     onRecordingStop: () => {
       console.log("녹음 종료");
-      if (isConnected) {
-        commitAudio(); // 오디오 입력 커밋하고 응답 생성
+      // PTT 모드에서만 커밋하여 응답 트리거
+      if (isConnected && !isAutoVAD) {
+        commitAudio();
       }
-      
+
       const audioMessage: ChatMessage = {
         id: uuidv4(),
         type: "audio",
@@ -213,6 +220,10 @@ export default function TestPage() {
 
   // 연결 처리
   const handleConnect = async () => {
+    // 사용자 제스처 시점에 오디오 컨텍스트/마이크를 활성화해 자동 시작이 차단되지 않도록 함
+    if (isAudioMode && isAutoVAD && !isRecording) {
+      try { startRecording(); } catch { }
+    }
     await connect({ serverUrl, userId });
   };
 
@@ -256,6 +267,51 @@ export default function TestPage() {
     }
   };
 
+  // 연결 및 모드 변화에 따른 자동 VAD 처리
+  useEffect(() => {
+    if (!isConnected) {
+      // 연결이 끊기면 녹음 중지
+      if (isRecording) stopRecording();
+      hasSentGreetingRef.current = false;
+      return;
+    }
+
+    // 서버 VAD on/off 동기화
+    const shouldMute = !isAudioMode || !isAutoVAD;
+    mute(shouldMute);
+
+    // 자동 VAD + 오디오 모드일 때 자동 녹음 시작
+    if (isAudioMode && isAutoVAD && !isRecording) {
+      startRecording();
+    }
+
+    // 최초 연결 시 간단한 인사로 에이전트 웜업 (중복 방지)
+    if (!hasSentGreetingRef.current) {
+      try {
+        setTimeout(() => {
+          if (isConnected) {
+            // 선택적으로 초기 트리거를 전송할 수 있음
+            // sendText('hi');
+          }
+        }, 300);
+      } catch { }
+      hasSentGreetingRef.current = true;
+    }
+  }, [isConnected, isAudioMode, isAutoVAD]);
+
+  // 오디오/모드 토글 시 자동 녹음 상태 동기화
+  useEffect(() => {
+    if (!isConnected) return;
+    if (isAudioMode && isAutoVAD) {
+      if (!isRecording) startRecording();
+    } else {
+      if (isRecording) stopRecording();
+    }
+    // 서버 VAD on/off도 함께 동기화
+    const shouldMute = !isAudioMode || !isAutoVAD;
+    mute(shouldMute);
+  }, [isAudioMode, isAutoVAD]);
+
   // 메시지 타임스탬프 포맷
   const formatTimestamp = (timestamp: number) => {
     return new Date(timestamp).toLocaleTimeString();
@@ -268,7 +324,7 @@ export default function TestPage() {
         <h1 className="text-2xl font-bold text-gray-800 mb-4">
           브릿지 서버 테스트 페이지
         </h1>
-        
+
         {/* 연결 설정 */}
         <div className="flex flex-wrap gap-4 items-center">
           <div className="flex items-center gap-2">
@@ -282,7 +338,7 @@ export default function TestPage() {
               disabled={isConnected}
             />
           </div>
-          
+
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium">사용자 ID:</label>
             <input
@@ -297,22 +353,20 @@ export default function TestPage() {
 
           <button
             onClick={isConnected ? handleDisconnect : handleConnect}
-            className={`px-4 py-2 rounded text-white font-medium ${
-              isConnected 
-                ? "bg-red-500 hover:bg-red-600" 
-                : "bg-blue-500 hover:bg-blue-600"
-            }`}
+            className={`px-4 py-2 rounded text-white font-medium ${isConnected
+              ? "bg-red-500 hover:bg-red-600"
+              : "bg-blue-500 hover:bg-blue-600"
+              }`}
           >
             {isConnected ? "연결 해제" : "연결"}
           </button>
 
-          <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-            status === "CONNECTED" 
-              ? "bg-green-100 text-green-800" 
-              : status === "CONNECTING"
+          <div className={`px-3 py-1 rounded-full text-sm font-medium ${status === "CONNECTED"
+            ? "bg-green-100 text-green-800"
+            : status === "CONNECTING"
               ? "bg-yellow-100 text-yellow-800"
               : "bg-red-100 text-red-800"
-          }`}>
+            }`}>
             {status}
           </div>
         </div>
@@ -337,35 +391,32 @@ export default function TestPage() {
             ) : (
               <div className="space-y-4">
                 {messages.map((message) => (
-                  <div key={message.id} className={`flex ${
-                    message.role === "user" ? "justify-end" : "justify-start"
-                  }`}>
-                    <div className={`max-w-xs md:max-w-md lg:max-w-lg xl:max-w-xl px-4 py-2 rounded-lg ${
-                      message.role === "user"
-                        ? "bg-blue-500 text-white"
-                        : message.role === "assistant"
+                  <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"
+                    }`}>
+                    <div className={`max-w-xs md:max-w-md lg:max-w-lg xl:max-w-xl px-4 py-2 rounded-lg ${message.role === "user"
+                      ? "bg-blue-500 text-white"
+                      : message.role === "assistant"
                         ? "bg-gray-200 text-gray-800"
                         : "bg-yellow-100 text-yellow-800"
-                    }`}>
+                      }`}>
                       <div className="text-sm">
                         {message.content}
                       </div>
-                      <div className={`text-xs mt-1 ${
-                        message.role === "user" ? "text-blue-100" : "text-gray-500"
-                      }`}>
+                      <div className={`text-xs mt-1 ${message.role === "user" ? "text-blue-100" : "text-gray-500"
+                        }`}>
                         {formatTimestamp(message.timestamp)}
                       </div>
                     </div>
                   </div>
                 ))}
-                
+
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="bg-gray-200 text-gray-800 px-4 py-2 rounded-lg">
                       <div className="flex items-center space-x-1">
                         <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
-                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                       </div>
                     </div>
                   </div>
@@ -382,17 +433,15 @@ export default function TestPage() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setIsAudioMode(false)}
-                  className={`px-3 py-1 rounded text-sm ${
-                    !isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
-                  }`}
+                  className={`px-3 py-1 rounded text-sm ${!isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                    }`}
                 >
                   텍스트
                 </button>
                 <button
                   onClick={() => setIsAudioMode(true)}
-                  className={`px-3 py-1 rounded text-sm ${
-                    isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
-                  }`}
+                  className={`px-3 py-1 rounded text-sm ${isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                    }`}
                 >
                   음성
                 </button>
@@ -400,28 +449,47 @@ export default function TestPage() {
 
               {isAudioMode ? (
                 /* 음성 입력 */
-                <div className="flex-1 flex items-center gap-2">
-                  <button
-                    onClick={handleAudioToggle}
-                    disabled={!isConnected}
-                    className={`px-4 py-2 rounded-full font-medium ${
-                      isRecording
+                <div className="flex-1 flex items-center gap-3">
+                  {/* 자동 VAD 토글 */}
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium">자동 VAD</label>
+                    <button
+                      onClick={() => setIsAutoVAD(v => !v)}
+                      className={`px-3 py-1 rounded text-sm ${isAutoVAD ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                        }`}
+                    >
+                      {isAutoVAD ? "켜짐" : "꺼짐"}
+                    </button>
+                  </div>
+
+                  {/* PTT 버튼 (자동 VAD가 꺼진 경우에만 표시) */}
+                  {!isAutoVAD && (
+                    <button
+                      onClick={handleAudioToggle}
+                      disabled={!isConnected}
+                      className={`px-4 py-2 rounded-full font-medium ${isRecording
                         ? "bg-red-500 text-white animate-pulse"
                         : isConnected
-                        ? "bg-green-500 text-white hover:bg-green-600"
-                        : "bg-gray-300 text-gray-500 cursor-not-allowed"
-                    }`}
-                  >
-                    {isRecording ? "🔴 녹음 중지" : "🎤 녹음 시작"}
-                  </button>
-                  
-                  {isRecording && (
+                          ? "bg-green-500 text-white hover:bg-green-600"
+                          : "bg-gray-300 text-gray-500 cursor-not-allowed"
+                        }`}
+                    >
+                      {isRecording ? "🔴 녹음 중지" : "🎤 녹음 시작"}
+                    </button>
+                  )}
+
+                  {/* 상태 영역 */}
+                  {(isRecording || isAutoVAD) && (
                     <div className="text-sm text-gray-600">
-                      녹음 시간: {recordingState.recordingTime}초
+                      {isAutoVAD ? (
+                        <span>서버 VAD 활성 • 실시간 스트리밍 중</span>
+                      ) : (
+                        <span>녹음 시간: {recordingState.recordingTime}초</span>
+                      )}
                       {recordingState.audioLevel > 0 && (
-                        <div className="ml-2 inline-block">
+                        <span className="ml-2 inline-block">
                           음성 레벨: {Math.round(recordingState.audioLevel * 100)}%
-                        </div>
+                        </span>
                       )}
                     </div>
                   )}
@@ -447,7 +515,7 @@ export default function TestPage() {
                   </button>
                 </>
               )}
-              
+
               {/* 컨트롤 버튼 */}
               {isConnected && (
                 <div className="flex gap-2">

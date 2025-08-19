@@ -44,7 +44,7 @@ export class RealtimeProxyService extends EventEmitter {
 
         // OpenAI Realtime API WebSocket URL
         const wsUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(this.model)}`;
-        
+
         this.openaiWs = new WebSocket(wsUrl, {
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
@@ -55,7 +55,7 @@ export class RealtimeProxyService extends EventEmitter {
         this.openaiWs.on('open', () => {
           console.log(`OpenAI Realtime WebSocket 연결됨: ${this.sessionId}`);
           this.isConnected = true;
-          
+
           // 초기 세션 설정
           this.sendToOpenAI({
             type: 'session.update',
@@ -71,7 +71,7 @@ export class RealtimeProxyService extends EventEmitter {
               },
               turn_detection: {
                 type: 'server_vad',
-                threshold: 0.9,
+                threshold: 0.5,
                 prefix_padding_ms: 300,
                 silence_duration_ms: 500,
                 create_response: true
@@ -89,13 +89,13 @@ export class RealtimeProxyService extends EventEmitter {
               sessionId: this.sessionId,
               eventType: message.type
             });
-            
+
             // 클라이언트로 메시지 전달
             this.emit('openai_message', message);
-            
+
             // 특정 이벤트 처리
             this.handleOpenAIEvent(message);
-            
+
           } catch (error) {
             console.error('OpenAI 메시지 파싱 오류:', error);
           }
@@ -133,7 +133,7 @@ export class RealtimeProxyService extends EventEmitter {
     try {
       const messageStr = JSON.stringify(message);
       this.openaiWs.send(messageStr);
-      
+
       console.log(`클라이언트 → OpenAI: ${message.type}`, {
         sessionId: this.sessionId,
         eventType: message.type
@@ -156,7 +156,7 @@ export class RealtimeProxyService extends EventEmitter {
 
     // Base64로 인코딩하여 전송
     const base64Audio = audioData.toString('base64');
-    
+
     this.sendToOpenAI({
       type: 'input_audio_buffer.append',
       audio: base64Audio
@@ -208,7 +208,7 @@ export class RealtimeProxyService extends EventEmitter {
         console.log(`OpenAI 세션 생성됨: ${message.session?.id}`);
         this.emit('session_created', message.session);
         break;
-        
+
       case 'conversation.item.input_audio_transcription.completed':
         console.log(`음성 전사 완료: "${message.transcript}"`);
         this.emit('audio_transcription', {
@@ -216,7 +216,7 @@ export class RealtimeProxyService extends EventEmitter {
           item_id: message.item_id
         });
         break;
-        
+
       case 'response.audio.delta':
         // 실시간 오디오 스트림
         this.emit('audio_delta', {
@@ -225,7 +225,7 @@ export class RealtimeProxyService extends EventEmitter {
           response_id: message.response_id
         });
         break;
-        
+
       case 'response.audio.done':
         console.log(`오디오 응답 완료: ${message.item_id}`);
         this.emit('audio_done', {
@@ -233,7 +233,7 @@ export class RealtimeProxyService extends EventEmitter {
           response_id: message.response_id
         });
         break;
-        
+
       case 'response.audio_transcript.delta':
         // 응답 음성의 실시간 전사
         this.emit('response_transcript_delta', {
@@ -241,7 +241,7 @@ export class RealtimeProxyService extends EventEmitter {
           item_id: message.item_id
         });
         break;
-        
+
       case 'response.audio_transcript.done':
         console.log(`응답 전사 완료: "${message.transcript}"`);
         this.emit('response_transcript_done', {
@@ -249,12 +249,12 @@ export class RealtimeProxyService extends EventEmitter {
           item_id: message.item_id
         });
         break;
-        
+
       case 'error':
         console.error('OpenAI 오류:', message.error);
         this.emit('error', new Error(message.error?.message || 'OpenAI 오류'));
         break;
-        
+
       default:
         // 기타 이벤트는 그대로 전달
         this.emit('other_event', message);
@@ -296,7 +296,7 @@ export class RealtimeProxyService extends EventEmitter {
    */
   sendTextMessage(text: string): void {
     const itemId = `msg_${Date.now()}`;
-    
+
     this.sendToOpenAI({
       type: 'conversation.item.create',
       item: {

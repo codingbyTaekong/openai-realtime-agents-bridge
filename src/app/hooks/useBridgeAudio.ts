@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface AudioRecordingOptions {
 	sampleRate?: number;
@@ -32,6 +32,7 @@ export function useBridgeAudio(
 	const audioLevelDataRef = useRef<Uint8Array | null>(null);
 	const processorRef = useRef<ScriptProcessorNode | null>(null);
 	const recordingTimerRef = useRef<number | null>(null);
+	const isActiveRef = useRef<boolean>(false);
 
 	const [recordingState, setRecordingState] = useState<AudioRecordingState>({
 		isRecording: false,
@@ -39,6 +40,8 @@ export function useBridgeAudio(
 		recordingTime: 0,
 		audioLevel: 0
 	});
+	const callbacksRef = useRef<BridgeAudioCallbacks>(callbacks);
+	useEffect(() => { callbacksRef.current = callbacks; }, [callbacks]);
 
 	const {
 		sampleRate = 24000,
@@ -123,11 +126,11 @@ export function useBridgeAudio(
 			processor.connect(audioContext.destination);
 
 			processor.onaudioprocess = (event) => {
-				if (!recordingState.isRecording) return;
+				if (!isActiveRef.current) return;
 				const inputBuffer = event.inputBuffer.getChannelData(0);
 				const ds = downsampleBuffer(inputBuffer, audioContext.sampleRate, sampleRate);
 				const pcm16 = floatTo16BitPCM(ds);
-				callbacks.onAudioChunk?.(pcm16);
+				callbacksRef.current.onAudioChunk?.(pcm16);
 			};
 
 			// 상태 업데이트
@@ -136,7 +139,8 @@ export function useBridgeAudio(
 				isPaused: false,
 				recordingTime: 0
 			});
-			callbacks.onRecordingStart?.();
+			isActiveRef.current = true;
+			callbacksRef.current.onRecordingStart?.();
 
 			// 타이머 시작
 			let startTime = Date.now();
@@ -148,20 +152,21 @@ export function useBridgeAudio(
 			// 오디오 레벨 모니터링
 			audioLevelDataRef.current = new Uint8Array(analyser.frequencyBinCount);
 			const updateAudioLevel = () => {
+				if (!isActiveRef.current) return;
 				if (analyserRef.current && audioLevelDataRef.current) {
 					analyserRef.current.getByteFrequencyData(audioLevelDataRef.current);
 					const sum = audioLevelDataRef.current.reduce((a, b) => a + b, 0);
 					const avg = sum / audioLevelDataRef.current.length;
 					updateRecordingState({ audioLevel: avg / 255 });
 				}
-				if (recordingState.isRecording) requestAnimationFrame(updateAudioLevel);
+				if (isActiveRef.current) requestAnimationFrame(updateAudioLevel);
 			};
 			requestAnimationFrame(updateAudioLevel);
 
 			console.log('녹음이 시작되었습니다. (PCM16 스트리밍)');
 		} catch (error) {
 			console.error('녹음 시작 오류:', error);
-			callbacks.onError?.(error as Error);
+			callbacksRef.current.onError?.(error as Error);
 			updateRecordingState({ isRecording: false, isPaused: false });
 		}
 	}, [channels, sampleRate, callbacks, updateRecordingState, recordingState.isRecording]);
@@ -169,6 +174,8 @@ export function useBridgeAudio(
 	const stopRecording = useCallback(() => {
 		try {
 			console.log('녹음 중지...');
+
+			isActiveRef.current = false;
 
 			if (processorRef.current) {
 				processorRef.current.disconnect();
@@ -197,11 +204,11 @@ export function useBridgeAudio(
 				audioLevel: 0
 			});
 
-			callbacks.onRecordingStop?.();
+			callbacksRef.current.onRecordingStop?.();
 			console.log('녹음이 중지되었습니다.');
 		} catch (error) {
 			console.error('녹음 중지 오류:', error);
-			callbacks.onError?.(error as Error);
+			callbacksRef.current.onError?.(error as Error);
 		}
 	}, [updateRecordingState, callbacks]);
 
