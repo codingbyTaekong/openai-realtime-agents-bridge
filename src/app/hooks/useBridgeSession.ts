@@ -70,7 +70,7 @@ export function useBridgeSession(callbacks: BridgeSessionCallbacks = {}) {
         // 이벤트 리스너 설정
         socket.on('connect', () => {
           console.log('Socket.IO 연결됨:', socket.id);
-          
+
           // 세션 참여 요청
           socket.emit('join_session', { userId });
         });
@@ -136,14 +136,14 @@ export function useBridgeSession(callbacks: BridgeSessionCallbacks = {}) {
   const disconnect = useCallback(() => {
     if (socketRef.current) {
       console.log('브릿지 세션 연결 해제 중...');
-      
+
       // 서버에 연결 해제 알림
       socketRef.current.emit('disconnect_session');
-      
+
       // Socket 연결 해제
       socketRef.current.disconnect();
       socketRef.current = null;
-      
+
       updateStatus('DISCONNECTED');
     }
   }, [updateStatus]);
@@ -159,7 +159,7 @@ export function useBridgeSession(callbacks: BridgeSessionCallbacks = {}) {
     socketRef.current.emit('send_text', text);
   }, [status, callbacks]);
 
-  const sendAudio = useCallback((audioData: Buffer | string, format: string = 'wav') => {
+  const sendAudio = useCallback((audioData: ArrayBuffer | Buffer | string, format: string = 'wav') => {
     if (!socketRef.current || status !== 'CONNECTED') {
       console.warn('연결되지 않음 - 오디오 전송 실패');
       callbacks.onError?.({ message: '서버에 연결되지 않았습니다.' });

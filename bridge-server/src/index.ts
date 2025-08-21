@@ -205,17 +205,21 @@ io.on('connection', (socket) => {
     }
 
     try {
-      console.log(`오디오 데이터 수신: ${currentSession.id}, 형식=${format}`);
+      console.log(`오디오 데이터 수신: ${currentSession.id}, 형식=${format}, 크기=${audioData instanceof ArrayBuffer ? audioData.byteLength : audioData.length}바이트`);
 
-      // 오디오 데이터를 Buffer로 변환
+      // ArrayBuffer를 Buffer로 직접 변환 (Socket.IO가 자동으로 변환해줌)
       let audioBuffer: Buffer;
-      if (typeof audioData === 'string') {
-        audioBuffer = Buffer.from(audioData, 'base64');
-      } else {
+      if (audioData instanceof ArrayBuffer) {
+        audioBuffer = Buffer.from(audioData);
+      } else if (Buffer.isBuffer(audioData)) {
         audioBuffer = audioData;
+      } else {
+        console.error('지원하지 않는 오디오 데이터 타입:', typeof audioData);
+        socket.emit('error', { message: '지원하지 않는 오디오 데이터 형식입니다.' });
+        return;
       }
 
-      // OpenAI Realtime API로 직접 전송 (실시간 스트리밍)
+      // OpenAI Realtime API로 직접 전송 (RealtimeProxyService에서 base64 변환 수행)
       realtimeProxy.sendAudioToOpenAI(audioBuffer);
 
       // 활동 시간 업데이트

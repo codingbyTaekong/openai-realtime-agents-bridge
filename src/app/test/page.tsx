@@ -135,11 +135,10 @@ export default function TestPage() {
 
   const audioCallbacks = {
     onAudioChunk: async (audioData: ArrayBuffer) => {
-      // 실시간 오디오 청크 전송 (Realtime API 방식)
+      // 실시간 오디오 청크 전송 (ArrayBuffer 직접 전송)
       if (isConnectedRef.current) {
         try {
-          const base64 = btoa(String.fromCharCode(...new Uint8Array(audioData)));
-          sendAudio(base64, 'pcm16');
+          sendAudio(audioData, 'pcm16');
         } catch (error) {
           console.error("실시간 오디오 전송 오류:", error);
         }
