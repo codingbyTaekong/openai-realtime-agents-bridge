@@ -1,0 +1,29 @@
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "mysql"
+    url      = env("DATABASE_URL")
+}
+
+enum ContentType {
+    IMAGE
+    VIDEO
+    SCENE
+}
+
+model Contents {
+    contentId      String      @id @default(cuid())
+    name           String
+    type           ContentType
+    sceneId        String?
+    originFileName String?
+    filePath       String?
+    duration       Int?
+    createdAt      DateTime    @default(now())
+    updatedAt      DateTime    @updatedAt
+    useAt          Boolean     @default(true)
+
+    @@map("contents")
+}

@@ -1,24 +1,24 @@
 import type { Message, AgentConfig } from '../types';
 import { OpenAIService } from '../services/OpenAIService';
-import { ChatSupervisorAgent } from './ChatSupervisorAgent';
+import { ToyMuseumAgent } from './ToyMuseumAgent';
 
 export class AgentManager {
   private openaiService: OpenAIService;
-  private chatSupervisorAgent: ChatSupervisorAgent;
+  private toyMuseumAgent: ToyMuseumAgent;
   private sessionAgents: Map<string, any> = new Map();
 
   constructor(openaiService: OpenAIService) {
     this.openaiService = openaiService;
-    this.chatSupervisorAgent = new ChatSupervisorAgent(openaiService);
+    this.toyMuseumAgent = new ToyMuseumAgent(openaiService);
   }
 
   /**
-   * Realtime용 supervisor 설정 노출
+   * 주어진 agentType에 맞는 Realtime 지침/도구 반환
    */
-  getSupervisorRealtimeConfig() {
+  getRealtimeConfig() {
     return {
-      instructions: this.chatSupervisorAgent.getRealtimeInstructions(),
-      tools: this.chatSupervisorAgent.getRealtimeTools(),
+      instructions: this.toyMuseumAgent.getRealtimeInstructions(),
+      tools: this.toyMuseumAgent.getRealtimeTools(),
     };
   }
 
@@ -44,29 +44,6 @@ export class AgentManager {
       sessionState.conversationHistory.push(message);
       sessionState.lastActivity = new Date();
 
-      // 텍스트 메시지인 경우 chatSupervisor 에이전트로 처리
-      if (message.type === 'text') {
-        const response = await this.chatSupervisorAgent.processTextMessage(
-          sessionId,
-          message.content,
-          sessionState.conversationHistory
-        );
-
-        // 응답을 대화 히스토리에 추가
-        if (response) {
-          const assistantMessage: Message = {
-            id: `resp_${Date.now()}`,
-            type: 'text',
-            content: response.content || '',
-            role: 'assistant',
-            timestamp: Date.now()
-          };
-          sessionState.conversationHistory.push(assistantMessage);
-        }
-
-        return response;
-      }
-
       return null;
     } catch (error) {
       console.error('메시지 처리 오류:', error);
@@ -74,41 +51,6 @@ export class AgentManager {
     }
   }
 
-  /**
-   * 오디오 메시지 처리
-   */
-  async processAudioMessage(sessionId: string, audioMessage: Message): Promise<any> {
-    try {
-      console.log(`오디오 메시지 처리 중: 세션=${sessionId}`);
-
-      // 세션별 에이전트 상태 초기화 (필요한 경우)
-      if (!this.sessionAgents.has(sessionId)) {
-        this.sessionAgents.set(sessionId, {
-          conversationHistory: [],
-          currentAgent: 'chatAgent',
-          lastActivity: new Date()
-        });
-      }
-
-      const sessionState = this.sessionAgents.get(sessionId);
-
-      // 오디오 메시지를 대화 히스토리에 추가
-      sessionState.conversationHistory.push(audioMessage);
-      sessionState.lastActivity = new Date();
-
-      // 오디오 처리 - 대화 히스토리와 함께 전달
-      const response = await this.chatSupervisorAgent.processAudioMessage(
-        sessionId,
-        audioMessage,
-        sessionState.conversationHistory
-      );
-
-      return response;
-    } catch (error) {
-      console.error('오디오 메시지 처리 오류:', error);
-      throw error;
-    }
-  }
 
   /**
    * 세션 중단

@@ -66,6 +66,7 @@ export interface ServerToClientEvents {
   transcript: (transcript: string, role: "user" | "assistant") => void;
   error: (error: { message: string; code?: string }) => void;
   realtime_event: (event: any) => void;
+  toy_action?: (payload: { action: 'dance' | 'sing'; sessionId: string; confidence?: number; raw?: string }) => void;
 }
 
 export interface ClientToServerEvents {

@@ -1,4 +1,6 @@
 import express from 'express';
+import path from 'path';
+import fs from 'fs';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
@@ -20,6 +22,7 @@ import { AudioProcessor } from './services/AudioProcessor';
 import { OpenAIService } from './services/OpenAIService';
 import { RealtimeProxyService } from './services/RealtimeProxyService';
 import { AgentManager } from './agents/AgentManager';
+import contentsRouter from './routes/contents';
 
 // Load environment variables
 dotenv.config();
@@ -37,7 +40,7 @@ const io = new Server<
   SocketData
 >(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -50,6 +53,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// 업로드 디렉토리 설정 및 정적 서빙
+const uploadsDir = path.resolve(process.cwd(), 'upload_files');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+app.use('/uploads', express.static(uploadsDir));
 
 // Services 초기화
 const sessionManager = new SessionManager();
@@ -65,6 +75,9 @@ app.get('/health', (req, res) => {
     activeSessions: sessionManager.getActiveSessionCount()
   });
 });
+
+// REST 라우트
+app.use('/api/contents', contentsRouter);
 
 // Session management endpoint
 app.post('/api/session', async (req, res) => {
@@ -83,6 +96,21 @@ io.on('connection', (socket) => {
 
   let currentSession: ClientSession | null = null;
   let realtimeProxy: RealtimeProxyService | null = null;
+
+  // 텍스트에서 장난감 동작 의도 감지
+  const detectToyActionFromText = (text: string): { action: 'dance' | 'sing'; confidence: number } | null => {
+    const lower = (text || '').toLowerCase();
+    const danceKeywords = ['춤', '춤춰', '춤춰봐', '댄스', 'dance'];
+    const singKeywords = ['노래', '노래해', '노래불러줘', 'sing', 'song'];
+
+    if (danceKeywords.some(k => lower.includes(k))) {
+      return { action: 'dance', confidence: 0.9 };
+    }
+    if (singKeywords.some(k => lower.includes(k))) {
+      return { action: 'sing', confidence: 0.9 };
+    }
+    return null;
+  };
 
   // 세션 참여 처리
   socket.on('join_session', async (data) => {
@@ -105,15 +133,15 @@ io.on('connection', (socket) => {
       // Socket을 세션 룸에 참여시킴
       await socket.join(`session:${sessionId}`);
 
-      // OpenAI Realtime API 프록시 생성 (supervisor 지침/도구 주입)
-      const supervisor = agentManager.getSupervisorRealtimeConfig();
+      // OpenAI Realtime API 프록시 생성 (agentType에 따라 지침/도구 주입)
+      const realtimeConfig = agentManager.getRealtimeConfig();
       realtimeProxy = new RealtimeProxyService({
         apiKey: process.env.OPENAI_API_KEY!,
         sessionId: sessionId,
         model: 'gpt-4o-realtime-preview-2025-06-03',
         voice: 'sage',
-        instructions: supervisor.instructions,
-        tools: supervisor.tools
+        instructions: realtimeConfig.instructions,
+        tools: realtimeConfig.tools
       });
 
       // 프록시 이벤트 리스너 설정
@@ -125,6 +153,16 @@ io.on('connection', (socket) => {
       realtimeProxy.on('audio_transcription', (data) => {
         // 사용자 음성 전사
         socket.emit('transcript', data.text, 'user');
+
+        const detected = detectToyActionFromText(data.text || '');
+        if (detected && currentSession) {
+
+          const payload = { action: detected.action, sessionId: currentSession.id, confidence: detected.confidence, raw: data.text };
+          console.log('춤추기 명령 수행 전 toy_action', payload);
+          socket.emit('toy_action', payload);
+          // 동일 세션 룸에 브로드캐스트 (로봇 제어 클라이언트가 별 소켓으로 연결될 수 있음)
+          io.to(`session:${currentSession.id}`).emit('toy_action', payload);
+        }
       });
 
       realtimeProxy.on('response_transcript_done', (data) => {
@@ -188,6 +226,14 @@ io.on('connection', (socket) => {
       // OpenAI Realtime API로 직접 전송
       realtimeProxy.sendTextMessage(text);
 
+      // 텍스트 명령으로 장난감 동작 트리거
+      const detected = detectToyActionFromText(text || '');
+      if (detected && currentSession) {
+        const payload = { action: detected.action, sessionId: currentSession.id, confidence: detected.confidence, raw: text };
+        socket.emit('toy_action', payload);
+        io.to(`session:${currentSession.id}`).emit('toy_action', payload);
+      }
+
       // 활동 시간 업데이트
       sessionManager.updateLastActivity(currentSession.id);
 
@@ -205,7 +251,7 @@ io.on('connection', (socket) => {
     }
 
     try {
-      console.log(`오디오 데이터 수신: ${currentSession.id}, 형식=${format}, 크기=${audioData instanceof ArrayBuffer ? audioData.byteLength : audioData.length}바이트`);
+      // console.log(`오디오 데이터 수신: ${currentSession.id}, 형식=${format}, 크기=${audioData instanceof ArrayBuffer ? audioData.byteLength : audioData.length}바이트`);
 
       // ArrayBuffer를 Buffer로 직접 변환 (Socket.IO가 자동으로 변환해줌)
       let audioBuffer: Buffer;

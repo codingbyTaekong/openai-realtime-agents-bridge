@@ -85,10 +85,10 @@ export class RealtimeProxyService extends EventEmitter {
         this.openaiWs.on('message', (data: WebSocket.Data) => {
           try {
             const message = JSON.parse(data.toString());
-            console.log(`OpenAI → 클라이언트: ${message.type}`, {
-              sessionId: this.sessionId,
-              eventType: message.type
-            });
+            // console.log(`OpenAI → 클라이언트: ${message.type}`, {
+            //   sessionId: this.sessionId,
+            //   eventType: message.type
+            // });
 
             // 클라이언트로 메시지 전달
             this.emit('openai_message', message);
@@ -134,10 +134,10 @@ export class RealtimeProxyService extends EventEmitter {
       const messageStr = JSON.stringify(message);
       this.openaiWs.send(messageStr);
 
-      console.log(`클라이언트 → OpenAI: ${message.type}`, {
-        sessionId: this.sessionId,
-        eventType: message.type
-      });
+      // console.log(`클라이언트 → OpenAI: ${message.type}`, {
+      //   sessionId: this.sessionId,
+      //   eventType: message.type
+      // });
 
     } catch (error) {
       console.error('OpenAI 메시지 전송 오류:', error);

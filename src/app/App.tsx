@@ -1,551 +1,543 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+
+import React, { useState, useEffect, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
 
-import Image from "next/image";
+// Bridge hooks
+import { useBridgeSession, type BridgeMessage, type BridgeSessionStatus } from "./hooks/useBridgeSession";
+import { useBridgeAudio } from "./hooks/useBridgeAudio";
+import { usePcm16Player } from "./hooks/usePcm16Player";
 
-// UI components
-import Transcript from "./components/Transcript";
-import Events from "./components/Events";
-import BottomToolbar from "./components/BottomToolbar";
+// 메시지 타입 정의
+interface ChatMessage {
+  id: string;
+  type: "text" | "audio" | "system";
+  content: string;
+  role: "user" | "assistant" | "system";
+  timestamp: number;
+}
 
-// Types
-import { SessionStatus } from "@/app/types";
-import type { RealtimeAgent } from '@openai/agents/realtime';
+export default function TestPage() {
+  // Bridge session 상태
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState("");
+  const [serverUrl, setServerUrl] = useState("http://localhost:8000");
+  const [userId, setUserId] = useState("");
+  const [isAudioMode, setIsAudioMode] = useState(true);
+  const [isAutoVAD, setIsAutoVAD] = useState(true);
 
-// Context providers & hooks
-import { useTranscript } from "@/app/contexts/TranscriptContext";
-import { useEvent } from "@/app/contexts/EventContext";
-import { useRealtimeSession } from "./hooks/useRealtimeSession";
-import { createModerationGuardrail } from "@/app/agentConfigs/guardrails";
+  // UI 상태
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const hasSentGreetingRef = useRef(false);
 
-// Agent configs
-import { allAgentSets, defaultAgentSetKey } from "@/app/agentConfigs";
-import { customerServiceRetailScenario } from "@/app/agentConfigs/customerServiceRetail";
-import { chatSupervisorScenario } from "@/app/agentConfigs/chatSupervisor";
-import { customerServiceRetailCompanyName } from "@/app/agentConfigs/customerServiceRetail";
-import { chatSupervisorCompanyName } from "@/app/agentConfigs/chatSupervisor";
-import { simpleHandoffScenario } from "@/app/agentConfigs/simpleHandoff";
+  // Bridge session 콜백
+  const bridgeCallbacks = {
+    onConnectionChange: (status: BridgeSessionStatus) => {
+      console.log("연결 상태 변경:", status);
+      const systemMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "system",
+        content: `연결 상태: ${status.status}${status.sessionId ? ` (세션: ${status.sessionId})` : ""}`,
+        role: "system",
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, systemMessage]);
+    },
 
-// Map used by connect logic for scenarios defined via the SDK.
-const sdkScenarioMap: Record<string, RealtimeAgent[]> = {
-  simpleHandoff: simpleHandoffScenario,
-  customerServiceRetail: customerServiceRetailScenario,
-  chatSupervisor: chatSupervisorScenario,
-};
+    onMessage: (message: BridgeMessage) => {
+      console.log("메시지 수신:", message);
+      const chatMessage: ChatMessage = {
+        id: message.id,
+        type: message.type === "text" ? "text" : message.type === "audio" ? "audio" : "system",
+        content: message.content || JSON.stringify(message.data),
+        role: message.role || "assistant",
+        timestamp: message.timestamp
+      };
+      setMessages(prev => [...prev, chatMessage]);
+    },
 
-import useAudioDownload from "./hooks/useAudioDownload";
-import { useHandleSessionHistory } from "./hooks/useHandleSessionHistory";
+    onAgentResponse: (response: any) => {
+      console.log("에이전트 응답:", response);
+      const chatMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "text",
+        content: response.content || response.message || JSON.stringify(response),
+        role: "assistant",
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, chatMessage]);
+      setIsLoading(false);
+    },
 
-function App() {
-  const searchParams = useSearchParams()!;
+    onTranscript: (transcript: string, role: "user" | "assistant") => {
+      console.log("음성 전사:", transcript, role);
+      const chatMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "text",
+        content: `[음성 전사] ${transcript}`,
+        role: role,
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, chatMessage]);
+    },
 
-  // ---------------------------------------------------------------------
-  // Codec selector – lets you toggle between wide-band Opus (48 kHz)
-  // and narrow-band PCMU/PCMA (8 kHz) to hear what the agent sounds like on
-  // a traditional phone line and to validate ASR / VAD behaviour under that
-  // constraint.
-  //
-  // We read the `?codec=` query-param and rely on the `changePeerConnection`
-  // hook (configured in `useRealtimeSession`) to set the preferred codec
-  // before the offer/answer negotiation.
-  // ---------------------------------------------------------------------
-  const urlCodec = searchParams.get("codec") || "opus";
+    onAudioResponse: (audioData: string) => {
+      // PCM16 base64 델타를 즉시 재생
+      try {
+        pcmPlayer.playBase64Pcm16(audioData);
+      } catch (e) {
+        console.warn('오디오 재생 실패:', e);
+      }
+    },
 
-  // Agents SDK doesn't currently support codec selection so it is now forced 
-  // via global codecPatch at module load 
+    onRealtimeEvent: (event: any) => {
+      console.log("OpenAI Realtime 이벤트:", event.type, event);
 
-  const {
-    addTranscriptMessage,
-    addTranscriptBreadcrumb,
-  } = useTranscript();
-  const { logClientEvent, logServerEvent } = useEvent();
+      // 특정 이벤트에 대한 UI 업데이트
+      if (event.type === 'response.done') {
+        setIsLoading(false);
+      }
+    },
 
-  const [selectedAgentName, setSelectedAgentName] = useState<string>("");
-  const [selectedAgentConfigSet, setSelectedAgentConfigSet] = useState<
-    RealtimeAgent[] | null
-  >(null);
-
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
-  // Ref to identify whether the latest agent switch came from an automatic handoff
-  const handoffTriggeredRef = useRef(false);
-
-  const sdkAudioElement = React.useMemo(() => {
-    if (typeof window === 'undefined') return undefined;
-    const el = document.createElement('audio');
-    el.autoplay = true;
-    el.style.display = 'none';
-    document.body.appendChild(el);
-    return el;
-  }, []);
-
-  // Attach SDK audio element once it exists (after first render in browser)
-  useEffect(() => {
-    if (sdkAudioElement && !audioElementRef.current) {
-      audioElementRef.current = sdkAudioElement;
+    onError: (error: { message: string; code?: string }) => {
+      console.error("브릿지 서버 오류:", error);
+      const errorMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "system",
+        content: `오류: ${error.message}`,
+        role: "system",
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      setIsLoading(false);
     }
-  }, [sdkAudioElement]);
+  };
 
+  // Bridge session 훅
   const {
+    status,
+    sessionInfo,
     connect,
     disconnect,
-    sendUserText,
-    sendEvent,
+    sendText,
+    sendAudio,
+    commitAudio,
+    clearAudio,
     interrupt,
     mute,
-  } = useRealtimeSession({
-    onConnectionChange: (s) => setSessionStatus(s as SessionStatus),
-    onAgentHandoff: (agentName: string) => {
-      handoffTriggeredRef.current = true;
-      setSelectedAgentName(agentName);
-    },
-  });
+    isConnected
+  } = useBridgeSession(bridgeCallbacks);
 
-  const [sessionStatus, setSessionStatus] =
-    useState<SessionStatus>("DISCONNECTED");
+  // Bridge audio 콜백
+  const isConnectedRef = useRef(false);
+  useEffect(() => { isConnectedRef.current = isConnected; }, [isConnected]);
 
-  const [isEventsPaneExpanded, setIsEventsPaneExpanded] =
-    useState<boolean>(true);
-  const [userText, setUserText] = useState<string>("");
-  const [isPTTActive, setIsPTTActive] = useState<boolean>(false);
-  const [isPTTUserSpeaking, setIsPTTUserSpeaking] = useState<boolean>(false);
-  const [isAudioPlaybackEnabled, setIsAudioPlaybackEnabled] = useState<boolean>(
-    () => {
-      if (typeof window === 'undefined') return true;
-      const stored = localStorage.getItem('audioPlaybackEnabled');
-      return stored ? stored === 'true' : true;
+  const audioCallbacks = {
+    onAudioChunk: async (audioData: ArrayBuffer) => {
+      // 실시간 오디오 청크 전송 (ArrayBuffer 직접 전송)
+      if (isConnectedRef.current) {
+        try {
+          sendAudio(audioData, 'pcm16');
+        } catch (error) {
+          console.error("실시간 오디오 전송 오류:", error);
+        }
+      }
     },
+
+    onRecordingStart: () => {
+      console.log("녹음 시작");
+      // PTT 모드에서만 버퍼를 클리어
+      if (isConnected && !isAutoVAD) {
+        clearAudio();
+      }
+    },
+
+    onRecordingStop: () => {
+      console.log("녹음 종료");
+      // PTT 모드에서만 커밋하여 응답 트리거
+      if (isConnected && !isAutoVAD) {
+        commitAudio();
+      }
+
+      const audioMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "audio",
+        content: "[음성 입력 완료]",
+        role: "user",
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, audioMessage]);
+      setIsLoading(true);
+    },
+
+    onAudioData: async (audioBlob: Blob, format: string) => {
+      // 전체 오디오 데이터 (필요시 사용)
+      console.log("전체 오디오 데이터:", format, audioBlob.size, "바이트");
+    },
+
+    onRecordingStateChange: (state: any) => {
+      console.log("녹음 상태 변경:", state);
+    },
+
+    onError: (error: Error) => {
+      console.error("오디오 오류:", error);
+      const errorMessage: ChatMessage = {
+        id: uuidv4(),
+        type: "system",
+        content: `오디오 오류: ${error.message}`,
+        role: "system",
+        timestamp: Date.now()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
+  };
+
+  // Bridge audio 훅
+  const {
+    recordingState,
+    startRecording,
+    stopRecording,
+    isRecording
+  } = useBridgeAudio(
+    { sampleRate: 24000, channels: 1, format: 'pcm16' },
+    audioCallbacks
   );
 
-  // Initialize the recording hook.
-  const { startRecording, stopRecording, downloadRecording } =
-    useAudioDownload();
+  // PCM16 플레이어 (오토플레이 정책 회피: 첫 사용자 상호작용 시 컨텍스트 생성)
+  const pcmPlayer = usePcm16Player({ sampleRate: 24000, volume: 1.0 });
 
-  const sendClientEvent = (eventObj: any, eventNameSuffix = "") => {
-    try {
-      sendEvent(eventObj);
-      logClientEvent(eventObj, eventNameSuffix);
-    } catch (err) {
-      console.error('Failed to send via SDK', err);
-    }
-  };
-
-  useHandleSessionHistory();
-
+  // 메시지 스크롤
   useEffect(() => {
-    let finalAgentConfig = searchParams.get("agentConfig");
-    if (!finalAgentConfig || !allAgentSets[finalAgentConfig]) {
-      finalAgentConfig = defaultAgentSetKey;
-      const url = new URL(window.location.toString());
-      url.searchParams.set("agentConfig", finalAgentConfig);
-      window.location.replace(url.toString());
-      return;
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-    const agents = allAgentSets[finalAgentConfig];
-    const agentKeyToUse = agents[0]?.name || "";
-
-    setSelectedAgentName(agentKeyToUse);
-    setSelectedAgentConfigSet(agents);
-  }, [searchParams]);
-
+  // 랜덤 사용자 ID 생성
   useEffect(() => {
-    if (selectedAgentName && sessionStatus === "DISCONNECTED") {
-      connectToRealtime();
-    }
-  }, [selectedAgentName]);
-
-  useEffect(() => {
-    if (
-      sessionStatus === "CONNECTED" &&
-      selectedAgentConfigSet &&
-      selectedAgentName
-    ) {
-      const currentAgent = selectedAgentConfigSet.find(
-        (a) => a.name === selectedAgentName
-      );
-      addTranscriptBreadcrumb(`Agent: ${selectedAgentName}`, currentAgent);
-      updateSession(!handoffTriggeredRef.current);
-      // Reset flag after handling so subsequent effects behave normally
-      handoffTriggeredRef.current = false;
-    }
-  }, [selectedAgentConfigSet, selectedAgentName, sessionStatus]);
-
-  useEffect(() => {
-    if (sessionStatus === "CONNECTED") {
-      updateSession();
-    }
-  }, [isPTTActive]);
-
-  const fetchEphemeralKey = async (): Promise<string | null> => {
-    logClientEvent({ url: "/session" }, "fetch_session_token_request");
-    const tokenResponse = await fetch("/api/session");
-    const data = await tokenResponse.json();
-    logServerEvent(data, "fetch_session_token_response");
-
-    if (!data.client_secret?.value) {
-      logClientEvent(data, "error.no_ephemeral_key");
-      console.error("No ephemeral key provided by the server");
-      setSessionStatus("DISCONNECTED");
-      return null;
-    }
-
-    return data.client_secret.value;
-  };
-
-  const connectToRealtime = async () => {
-    const agentSetKey = searchParams.get("agentConfig") || "default";
-    if (sdkScenarioMap[agentSetKey]) {
-      if (sessionStatus !== "DISCONNECTED") return;
-      setSessionStatus("CONNECTING");
-
-      try {
-        const EPHEMERAL_KEY = await fetchEphemeralKey();
-        if (!EPHEMERAL_KEY) return;
-
-        // Ensure the selectedAgentName is first so that it becomes the root
-        const reorderedAgents = [...sdkScenarioMap[agentSetKey]];
-        const idx = reorderedAgents.findIndex((a) => a.name === selectedAgentName);
-        if (idx > 0) {
-          const [agent] = reorderedAgents.splice(idx, 1);
-          reorderedAgents.unshift(agent);
-        }
-
-        const companyName = agentSetKey === 'customerServiceRetail'
-          ? customerServiceRetailCompanyName
-          : chatSupervisorCompanyName;
-        const guardrail = createModerationGuardrail(companyName);
-
-        await connect({
-          getEphemeralKey: async () => EPHEMERAL_KEY,
-          initialAgents: reorderedAgents,
-          audioElement: sdkAudioElement,
-          outputGuardrails: [guardrail],
-          extraContext: {
-            addTranscriptBreadcrumb,
-          },
-        });
-      } catch (err) {
-        console.error("Error connecting via SDK:", err);
-        setSessionStatus("DISCONNECTED");
-      }
-      return;
-    }
-  };
-
-  const disconnectFromRealtime = () => {
-    disconnect();
-    setSessionStatus("DISCONNECTED");
-    setIsPTTUserSpeaking(false);
-  };
-
-  const sendSimulatedUserMessage = (text: string) => {
-    const id = uuidv4().slice(0, 32);
-    addTranscriptMessage(id, "user", text, true);
-
-    sendClientEvent({
-      type: 'conversation.item.create',
-      item: {
-        id,
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text }],
-      },
-    });
-    sendClientEvent({ type: 'response.create' }, '(simulated user text message)');
-  };
-
-  const updateSession = (shouldTriggerResponse: boolean = false) => {
-    // Reflect Push-to-Talk UI state by (de)activating server VAD on the
-    // backend. The Realtime SDK supports live session updates via the
-    // `session.update` event.
-    const turnDetection = isPTTActive
-      ? null
-      : {
-          type: 'server_vad',
-          threshold: 0.9,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-          create_response: true,
-        };
-
-    sendEvent({
-      type: 'session.update',
-      session: {
-        turn_detection: turnDetection,
-      },
-    });
-
-    // Send an initial 'hi' message to trigger the agent to greet the user
-    if (shouldTriggerResponse) {
-      sendSimulatedUserMessage('hi');
-    }
-    return;
-  }
-
-  const handleSendTextMessage = () => {
-    if (!userText.trim()) return;
-    interrupt();
-
-    try {
-      sendUserText(userText.trim());
-    } catch (err) {
-      console.error('Failed to send via SDK', err);
-    }
-
-    setUserText("");
-  };
-
-  const handleTalkButtonDown = () => {
-    if (sessionStatus !== 'CONNECTED') return;
-    interrupt();
-
-    setIsPTTUserSpeaking(true);
-    sendClientEvent({ type: 'input_audio_buffer.clear' }, 'clear PTT buffer');
-
-    // No placeholder; we'll rely on server transcript once ready.
-  };
-
-  const handleTalkButtonUp = () => {
-    if (sessionStatus !== 'CONNECTED' || !isPTTUserSpeaking)
-      return;
-
-    setIsPTTUserSpeaking(false);
-    sendClientEvent({ type: 'input_audio_buffer.commit' }, 'commit PTT');
-    sendClientEvent({ type: 'response.create' }, 'trigger response PTT');
-  };
-
-  const onToggleConnection = () => {
-    if (sessionStatus === "CONNECTED" || sessionStatus === "CONNECTING") {
-      disconnectFromRealtime();
-      setSessionStatus("DISCONNECTED");
-    } else {
-      connectToRealtime();
-    }
-  };
-
-  const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newAgentConfig = e.target.value;
-    const url = new URL(window.location.toString());
-    url.searchParams.set("agentConfig", newAgentConfig);
-    window.location.replace(url.toString());
-  };
-
-  const handleSelectedAgentChange = (
-    e: React.ChangeEvent<HTMLSelectElement>
-  ) => {
-    const newAgentName = e.target.value;
-    // Reconnect session with the newly selected agent as root so that tool
-    // execution works correctly.
-    disconnectFromRealtime();
-    setSelectedAgentName(newAgentName);
-    // connectToRealtime will be triggered by effect watching selectedAgentName
-  };
-
-  // Because we need a new connection, refresh the page when codec changes
-  const handleCodecChange = (newCodec: string) => {
-    const url = new URL(window.location.toString());
-    url.searchParams.set("codec", newCodec);
-    window.location.replace(url.toString());
-  };
-
-  useEffect(() => {
-    const storedPushToTalkUI = localStorage.getItem("pushToTalkUI");
-    if (storedPushToTalkUI) {
-      setIsPTTActive(storedPushToTalkUI === "true");
-    }
-    const storedLogsExpanded = localStorage.getItem("logsExpanded");
-    if (storedLogsExpanded) {
-      setIsEventsPaneExpanded(storedLogsExpanded === "true");
-    }
-    const storedAudioPlaybackEnabled = localStorage.getItem(
-      "audioPlaybackEnabled"
-    );
-    if (storedAudioPlaybackEnabled) {
-      setIsAudioPlaybackEnabled(storedAudioPlaybackEnabled === "true");
-    }
+    setUserId(`user_${Math.random().toString(36).substr(2, 9)}`);
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("pushToTalkUI", isPTTActive.toString());
-  }, [isPTTActive]);
-
-  useEffect(() => {
-    localStorage.setItem("logsExpanded", isEventsPaneExpanded.toString());
-  }, [isEventsPaneExpanded]);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "audioPlaybackEnabled",
-      isAudioPlaybackEnabled.toString()
-    );
-  }, [isAudioPlaybackEnabled]);
-
-  useEffect(() => {
-    if (audioElementRef.current) {
-      if (isAudioPlaybackEnabled) {
-        audioElementRef.current.muted = false;
-        audioElementRef.current.play().catch((err) => {
-          console.warn("Autoplay may be blocked by browser:", err);
-        });
-      } else {
-        // Mute and pause to avoid brief audio blips before pause takes effect.
-        audioElementRef.current.muted = true;
-        audioElementRef.current.pause();
-      }
+  // 연결 처리
+  const handleConnect = async () => {
+    // 사용자 제스처 시점에 오디오 컨텍스트/마이크를 활성화해 자동 시작이 차단되지 않도록 함
+    if (isAudioMode && isAutoVAD && !isRecording) {
+      try { startRecording(); } catch { }
     }
+    await connect({ serverUrl, userId });
+  };
 
-    // Toggle server-side audio stream mute so bandwidth is saved when the
-    // user disables playback. 
-    try {
-      mute(!isAudioPlaybackEnabled);
-    } catch (err) {
-      console.warn('Failed to toggle SDK mute', err);
-    }
-  }, [isAudioPlaybackEnabled]);
+  // 연결 해제 처리
+  const handleDisconnect = () => {
+    disconnect();
+  };
 
-  // Ensure mute state is propagated to transport right after we connect or
-  // whenever the SDK client reference becomes available.
-  useEffect(() => {
-    if (sessionStatus === 'CONNECTED') {
-      try {
-        mute(!isAudioPlaybackEnabled);
-      } catch (err) {
-        console.warn('mute sync after connect failed', err);
-      }
-    }
-  }, [sessionStatus, isAudioPlaybackEnabled]);
+  // 텍스트 메시지 전송
+  const handleSendText = () => {
+    if (!inputText.trim() || !isConnected) return;
 
-  useEffect(() => {
-    if (sessionStatus === "CONNECTED" && audioElementRef.current?.srcObject) {
-      // The remote audio stream from the audio element.
-      const remoteStream = audioElementRef.current.srcObject as MediaStream;
-      startRecording(remoteStream);
-    }
-
-    // Clean up on unmount or when sessionStatus is updated.
-    return () => {
-      stopRecording();
+    const userMessage: ChatMessage = {
+      id: uuidv4(),
+      type: "text",
+      content: inputText,
+      role: "user",
+      timestamp: Date.now()
     };
-  }, [sessionStatus]);
 
-  const agentSetKey = searchParams.get("agentConfig") || "default";
+    setMessages(prev => [...prev, userMessage]);
+    sendText(inputText);
+    setInputText("");
+    setIsLoading(true);
+  };
+
+  // 엔터 키 처리
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendText();
+    }
+  };
+
+  // 오디오 녹음 토글
+  const handleAudioToggle = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  // 연결 및 모드 변화에 따른 자동 VAD 처리
+  useEffect(() => {
+    if (!isConnected) {
+      // 연결이 끊기면 녹음 중지
+      if (isRecording) stopRecording();
+      hasSentGreetingRef.current = false;
+      return;
+    }
+
+    // 서버 VAD on/off 동기화
+    const shouldMute = !isAudioMode || !isAutoVAD;
+    mute(shouldMute);
+
+    // 자동 VAD + 오디오 모드일 때 자동 녹음 시작
+    if (isAudioMode && isAutoVAD && !isRecording) {
+      startRecording();
+    }
+
+    // 최초 연결 시 간단한 인사로 에이전트 웜업 (중복 방지)
+    if (!hasSentGreetingRef.current) {
+      try {
+        setTimeout(() => {
+          if (isConnected) {
+            // 선택적으로 초기 트리거를 전송할 수 있음
+            // sendText('hi');
+          }
+        }, 300);
+      } catch { }
+      hasSentGreetingRef.current = true;
+    }
+  }, [isConnected, isAudioMode, isAutoVAD]);
+
+  // 오디오/모드 토글 시 자동 녹음 상태 동기화
+  useEffect(() => {
+    if (!isConnected) return;
+    if (isAudioMode && isAutoVAD) {
+      if (!isRecording) startRecording();
+    } else {
+      if (isRecording) stopRecording();
+    }
+    // 서버 VAD on/off도 함께 동기화
+    const shouldMute = !isAudioMode || !isAutoVAD;
+    mute(shouldMute);
+  }, [isAudioMode, isAutoVAD]);
+
+  // 메시지 타임스탬프 포맷
+  const formatTimestamp = (timestamp: number) => {
+    return new Date(timestamp).toLocaleTimeString();
+  };
 
   return (
-    <div className="text-base flex flex-col h-screen bg-gray-100 text-gray-800 relative">
-      <div className="p-5 text-lg font-semibold flex justify-between items-center">
-        <div
-          className="flex items-center cursor-pointer"
-          onClick={() => window.location.reload()}
-        >
-          <div>
-            <Image
-              src="/openai-logomark.svg"
-              alt="OpenAI Logo"
-              width={20}
-              height={20}
-              className="mr-2"
+    <div className="min-h-screen bg-gray-100 flex flex-col">
+      {/* 헤더 */}
+      <div className="bg-white shadow-md p-4">
+        <h1 className="text-2xl font-bold text-gray-800 mb-4">
+          브릿지 서버 테스트 페이지
+        </h1>
+
+        {/* 연결 설정 */}
+        <div className="flex flex-wrap gap-4 items-center">
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">서버 URL:</label>
+            <input
+              type="text"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              className="px-2 py-1 border border-gray-300 rounded text-sm"
+              placeholder="http://localhost:8000"
+              disabled={isConnected}
             />
           </div>
-          <div>
-            Realtime API <span className="text-gray-500">Agents</span>
-          </div>
-        </div>
-        <div className="flex items-center">
-          <label className="flex items-center text-base gap-1 mr-2 font-medium">
-            Scenario
-          </label>
-          <div className="relative inline-block">
-            <select
-              value={agentSetKey}
-              onChange={handleAgentChange}
-              className="appearance-none border border-gray-300 rounded-lg text-base px-2 py-1 pr-8 cursor-pointer font-normal focus:outline-none"
-            >
-              {Object.keys(allAgentSets).map((agentKey) => (
-                <option key={agentKey} value={agentKey}>
-                  {agentKey}
-                </option>
-              ))}
-            </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-gray-600">
-              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path
-                  fillRule="evenodd"
-                  d="M5.23 7.21a.75.75 0 011.06.02L10 10.44l3.71-3.21a.75.75 0 111.04 1.08l-4.25 3.65a.75.75 0 01-1.04 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium">사용자 ID:</label>
+            <input
+              type="text"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              className="px-2 py-1 border border-gray-300 rounded text-sm"
+              placeholder="user_123"
+              disabled={isConnected}
+            />
           </div>
 
-          {agentSetKey && (
-            <div className="flex items-center ml-6">
-              <label className="flex items-center text-base gap-1 mr-2 font-medium">
-                Agent
-              </label>
-              <div className="relative inline-block">
-                <select
-                  value={selectedAgentName}
-                  onChange={handleSelectedAgentChange}
-                  className="appearance-none border border-gray-300 rounded-lg text-base px-2 py-1 pr-8 cursor-pointer font-normal focus:outline-none"
-                >
-                  {selectedAgentConfigSet?.map((agent) => (
-                    <option key={agent.name} value={agent.name}>
-                      {agent.name}
-                    </option>
-                  ))}
-                </select>
-                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-gray-600">
-                  <svg
-                    className="h-4 w-4"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fillRule="evenodd"
-                      d="M5.23 7.21a.75.75 0 011.06.02L10 10.44l3.71-3.21a.75.75 0 111.04 1.08l-4.25 3.65a.75.75 0 01-1.04 0L5.21 8.27a.75.75 0 01.02-1.06z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
-                </div>
+          <button
+            onClick={isConnected ? handleDisconnect : handleConnect}
+            className={`px-4 py-2 rounded text-white font-medium ${isConnected
+              ? "bg-red-500 hover:bg-red-600"
+              : "bg-blue-500 hover:bg-blue-600"
+              }`}
+          >
+            {isConnected ? "연결 해제" : "연결"}
+          </button>
+
+          <div className={`px-3 py-1 rounded-full text-sm font-medium ${status === "CONNECTED"
+            ? "bg-green-100 text-green-800"
+            : status === "CONNECTING"
+              ? "bg-yellow-100 text-yellow-800"
+              : "bg-red-100 text-red-800"
+            }`}>
+            {status}
+          </div>
+        </div>
+
+        {/* 세션 정보 */}
+        {isConnected && (
+          <div className="mt-2 text-sm text-gray-600">
+            세션 ID: {sessionInfo.sessionId} | 사용자: {sessionInfo.userId}
+          </div>
+        )}
+      </div>
+
+      {/* 메시지 영역 */}
+      <div className="flex-1 p-4 overflow-hidden">
+        <div className="bg-white rounded-lg shadow h-full flex flex-col">
+          {/* 메시지 리스트 */}
+          <div className="flex-1 p-4 overflow-y-auto">
+            {messages.length === 0 ? (
+              <div className="text-center text-gray-500 mt-8">
+                브릿지 서버에 연결하고 대화를 시작해보세요.
               </div>
+            ) : (
+              <div className="space-y-4">
+                {messages.map((message) => (
+                  <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"
+                    }`}>
+                    <div className={`max-w-xs md:max-w-md lg:max-w-lg xl:max-w-xl px-4 py-2 rounded-lg ${message.role === "user"
+                      ? "bg-blue-500 text-white"
+                      : message.role === "assistant"
+                        ? "bg-gray-200 text-gray-800"
+                        : "bg-yellow-100 text-yellow-800"
+                      }`}>
+                      <div className="text-sm">
+                        {message.content}
+                      </div>
+                      <div className={`text-xs mt-1 ${message.role === "user" ? "text-blue-100" : "text-gray-500"
+                        }`}>
+                        {formatTimestamp(message.timestamp)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-gray-200 text-gray-800 px-4 py-2 rounded-lg">
+                      <div className="flex items-center space-x-1">
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* 입력 영역 */}
+          <div className="border-t p-4">
+            <div className="flex items-center gap-2">
+              {/* 모드 토글 */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsAudioMode(false)}
+                  className={`px-3 py-1 rounded text-sm ${!isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                    }`}
+                >
+                  텍스트
+                </button>
+                <button
+                  onClick={() => setIsAudioMode(true)}
+                  className={`px-3 py-1 rounded text-sm ${isAudioMode ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                    }`}
+                >
+                  음성
+                </button>
+              </div>
+
+              {isAudioMode ? (
+                /* 음성 입력 */
+                <div className="flex-1 flex items-center gap-3">
+                  {/* 자동 VAD 토글 */}
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium">자동 VAD</label>
+                    <button
+                      onClick={() => setIsAutoVAD(v => !v)}
+                      className={`px-3 py-1 rounded text-sm ${isAutoVAD ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-700"
+                        }`}
+                    >
+                      {isAutoVAD ? "켜짐" : "꺼짐"}
+                    </button>
+                  </div>
+
+                  {/* PTT 버튼 (자동 VAD가 꺼진 경우에만 표시) */}
+                  {!isAutoVAD && (
+                    <button
+                      onClick={handleAudioToggle}
+                      disabled={!isConnected}
+                      className={`px-4 py-2 rounded-full font-medium ${isRecording
+                        ? "bg-red-500 text-white animate-pulse"
+                        : isConnected
+                          ? "bg-green-500 text-white hover:bg-green-600"
+                          : "bg-gray-300 text-gray-500 cursor-not-allowed"
+                        }`}
+                    >
+                      {isRecording ? "🔴 녹음 중지" : "🎤 녹음 시작"}
+                    </button>
+                  )}
+
+                  {/* 상태 영역 */}
+                  {(isRecording || isAutoVAD) && (
+                    <div className="text-sm text-gray-600">
+                      {isAutoVAD ? (
+                        <span>서버 VAD 활성 • 실시간 스트리밍 중</span>
+                      ) : (
+                        <span>녹음 시간: {recordingState.recordingTime}초</span>
+                      )}
+                      {recordingState.audioLevel > 0 && (
+                        <span className="ml-2 inline-block">
+                          음성 레벨: {Math.round(recordingState.audioLevel * 100)}%
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* 텍스트 입력 */
+                <>
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder="메시지를 입력하세요..."
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!isConnected}
+                  />
+                  <button
+                    onClick={handleSendText}
+                    disabled={!isConnected || !inputText.trim()}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  >
+                    전송
+                  </button>
+                </>
+              )}
+
+              {/* 컨트롤 버튼 */}
+              {isConnected && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => interrupt()}
+                    className="px-3 py-2 bg-orange-500 text-white rounded hover:bg-orange-600"
+                    title="중단"
+                  >
+                    ⏹️
+                  </button>
+                  <button
+                    onClick={() => mute(true)}
+                    className="px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
+                    title="음소거"
+                  >
+                    🔇
+                  </button>
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
       </div>
-
-      <div className="flex flex-1 gap-2 px-2 overflow-hidden relative">
-        <Transcript
-          userText={userText}
-          setUserText={setUserText}
-          onSendMessage={handleSendTextMessage}
-          downloadRecording={downloadRecording}
-          canSend={
-            sessionStatus === "CONNECTED"
-          }
-        />
-
-        <Events isExpanded={isEventsPaneExpanded} />
-      </div>
-
-      <BottomToolbar
-        sessionStatus={sessionStatus}
-        onToggleConnection={onToggleConnection}
-        isPTTActive={isPTTActive}
-        setIsPTTActive={setIsPTTActive}
-        isPTTUserSpeaking={isPTTUserSpeaking}
-        handleTalkButtonDown={handleTalkButtonDown}
-        handleTalkButtonUp={handleTalkButtonUp}
-        isEventsPaneExpanded={isEventsPaneExpanded}
-        setIsEventsPaneExpanded={setIsEventsPaneExpanded}
-        isAudioPlaybackEnabled={isAudioPlaybackEnabled}
-        setIsAudioPlaybackEnabled={setIsAudioPlaybackEnabled}
-        codec={urlCodec}
-        onCodecChange={handleCodecChange}
-      />
     </div>
   );
 }
-
-export default App;
